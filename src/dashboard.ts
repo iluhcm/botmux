@@ -59,6 +59,7 @@ import {
   compactGroupsMatrix,
   groupsNamesMatrix,
   createGroupsMatrixSnapshot,
+  dashboardEventInvalidatesGroupsMatrix,
   enrichSessionsWithGroupNames,
   roleWriteShouldInvalidate,
   type GroupsMatrix,
@@ -254,6 +255,7 @@ import {
   setDefaultModelsForGroup,
   setSerialInputForGroup,
   setIdleCloseForGroup,
+  setReplyModeForGroup,
   unbindOncall,
   type GroupsActionDeps,
   type HandlerResult as GroupsHandlerResult,
@@ -887,6 +889,11 @@ registry.on((online) => {
 // `git rev-parse` per session per turn, bounded by the resolver's concurrency
 // cap, NOT a slow background poll.
 aggregator.on(sessionPresentation.onEvent);
+// 回复模式改动可能来自飞书里的 `/reply-mode`（daemon 进程内写），dashboard 侧
+// 只能经 daemon SSE 得知 —— 收到就让群矩阵快照失效，避免 TTL 内展示旧的继承/覆盖状态。
+aggregator.on(ev => {
+  if (dashboardEventInvalidatesGroupsMatrix(ev)) groupsMatrixSnapshot.invalidate();
+});
 
 // 调试终端（owner-only 裸 bash）。默认工作目录取当前所有 session 的工作目录去重，
 // 让 owner 从熟悉的目录起终端复现问题；都没有时模块内退回 homedir。
@@ -3248,7 +3255,7 @@ async function buildGroupsMatrix(): Promise<GroupsMatrix> {
       for (const c of j.chats ?? []) {
         const {
           oncallChat,
-          defaultModels, serialInput, idleClose, agentCliId, agentModel, agentReasoningEffort,
+          defaultModels, serialInput, idleClose, replyMode, agentCliId, agentModel, agentReasoningEffort,
           firstSeenAt,
           hasRole,
           hasMessageListener,
@@ -3276,6 +3283,7 @@ async function buildGroupsMatrix(): Promise<GroupsMatrix> {
           defaultModels: defaultModels ?? {},
           serialInput: serialInput === true,
           idleClose,
+          ...(replyMode ? { replyMode } : {}),
           agentCliId, agentModel, agentReasoningEffort,
           hasRole: hasRole ?? false,
           hasMessageListener: hasMessageListener ?? false,
@@ -7032,6 +7040,18 @@ const server = createServer(async (req, res) => {
         const result = await unbindOncall(chatId, appId, groupsActionDeps);
         return writeHandlerResult(res, result);
       }
+    }
+
+    let mReplyMode: RegExpMatchArray | null;
+    if (req.method === 'PUT' && (mReplyMode = url.pathname.match(/^\/api\/groups\/([^/]+)\/reply-mode\/([^/]+)$/))) {
+      let body: unknown;
+      try { body = await readJsonBody(req, 4096); }
+      catch { return jsonRes(res, 400, { ok: false, error: 'bad_json' }); }
+      const result = await setReplyModeForGroup(
+        decodeURIComponent(mReplyMode[1]), decodeURIComponent(mReplyMode[2]),
+        JSON.stringify(body), groupsActionDeps,
+      );
+      return writeHandlerResult(res, result);
     }
 
     let mIdleClose: RegExpMatchArray | null;
