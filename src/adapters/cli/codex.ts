@@ -8,7 +8,7 @@ import type { DebugModelCapabilities } from './model-catalog-json.js';
 import { loadCodexServiceTierCatalog } from '../../services/codex-service-tier-catalog.js';
 import type { CliAdapter, PtyHandle } from './types.js';
 import { codexHistoryPath, codexHome, codexSessionsRoot } from '../../services/codex-paths.js';
-import { findCodexRolloutSetByPid } from '../../services/codex-transcript.js';
+import { findCodexRolloutSetByPid, findCodexSessionIdByBotmuxSessionId } from '../../services/codex-transcript.js';
 import { refreshCodexTerminalSession } from '../../services/codex-terminal-session.js';
 import { discoverRolloutSessions } from '../../services/resumable-session-discovery.js';
 import { delay, scaleMs } from '../../utils/timing.js';
@@ -200,36 +200,13 @@ async function waitForHistoryAppend(
 }
 
 function latestCodexSessionForBotmuxSession(botmuxSessionId: string): string | undefined {
-  const historyPath = codexHistoryPath();
-  if (!existsSync(historyPath)) return undefined;
-  try {
-    const size = statSync(historyPath).size;
-    const fd = openSync(historyPath, 'r');
-    const buf = Buffer.alloc(size);
-    try {
-      readSync(fd, buf, 0, size, 0);
-    } finally {
-      closeSync(fd);
-    }
-    const marker = JSON.stringify(botmuxSessionId).slice(1, -1);
-    const lines = buf.toString('utf8').trimEnd().split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i]!;
-      if (!line.includes(marker)) continue;
-      try {
-        const parsed = JSON.parse(line);
-        if (typeof parsed?.text === 'string' && parsed.text.includes(botmuxSessionId)) {
-          const sid = readCliSessionId(parsed);
-          if (sid) return sid;
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
+  // Resume must find the mapping however old it is, so no tail cap; the lookup
+  // is a bounded-memory newest-first scan that stops at the first hit, and a
+  // mention without a session_id falls through to an older one.
+  return findCodexSessionIdByBotmuxSessionId(botmuxSessionId, {
+    maxTailBytes: Number.POSITIVE_INFINITY,
+    skipUnmapped: true,
+  });
 }
 
 export function createCodexAdapter(pathOverride?: string): CliAdapter {
