@@ -256,6 +256,7 @@ import {
   setSerialInputForGroup,
   setIdleCloseForGroup,
   setReplyModeForGroup,
+  getChatModeForGroup,
   unbindOncall,
   type GroupsActionDeps,
   type HandlerResult as GroupsHandlerResult,
@@ -7040,6 +7041,15 @@ const server = createServer(async (req, res) => {
         const result = await unbindOncall(chatId, appId, groupsActionDeps);
         return writeHandlerResult(res, result);
       }
+    }
+
+    // 只读单群拓扑（不在 PUBLIC_READ_PATHS，匿名访问已被全局 gate 401）。
+    let mChatMode: RegExpMatchArray | null;
+    if (req.method === 'GET' && (mChatMode = url.pathname.match(/^\/api\/groups\/([^/]+)\/chat-mode\/([^/]+)$/))) {
+      const result = await getChatModeForGroup(
+        decodeURIComponent(mChatMode[1]), decodeURIComponent(mChatMode[2]), groupsActionDeps,
+      );
+      return writeHandlerResult(res, result);
     }
 
     let mReplyMode: RegExpMatchArray | null;
